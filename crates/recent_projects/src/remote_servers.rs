@@ -69,6 +69,7 @@ pub struct RemoteServerProjects {
     dev_container_picker: Option<Entity<Picker<DevContainerPickerDelegate>>>,
     _subscription: Subscription,
     allow_dismissal: bool,
+    dev_container_rebuild_no_cache: bool,
 }
 
 struct CreateRemoteServer {
@@ -259,7 +260,7 @@ impl PickerDelegate for DevContainerPickerDelegate {
             .update(cx, move |modal, cx| {
                 if secondary {
                     modal.edit_in_dev_container_json(selected_config.clone(), window, cx);
-                } else if let Some((app_state, context)) = modal
+                } else if let Some((app_state, mut context)) = modal
                     .workspace
                     .read_with(cx, |workspace, cx| {
                         let app_state = workspace.app_state().clone();
@@ -269,6 +270,7 @@ impl PickerDelegate for DevContainerPickerDelegate {
                     .ok()
                     .flatten()
                 {
+                    context.rebuild_no_cache = modal.dev_container_rebuild_no_cache;
                     modal.open_dev_container(selected_config, app_state, context, window, cx);
                     modal.view_in_progress_dev_container(window, cx);
                 } else {
@@ -848,6 +850,11 @@ impl RemoteServerProjects {
             cx,
         );
 
+        this.dev_container_rebuild_no_cache = dev_container_context
+            .as_ref()
+            .map(|c| c.rebuild_no_cache)
+            .unwrap_or(false);
+
         if configs.len() > 1 {
             let delegate = DevContainerPickerDelegate::new(configs, cx.weak_entity());
             this.dev_container_picker =
@@ -924,6 +931,7 @@ impl RemoteServerProjects {
             dev_container_picker: None,
             _subscription,
             allow_dismissal: true,
+            dev_container_rebuild_no_cache: false,
         }
     }
 
@@ -1834,7 +1842,7 @@ impl RemoteServerProjects {
                 CreateRemoteDevContainer::new(DevContainerCreationProgress::SelectingConfig, cx);
             self.mode = Mode::CreateRemoteDevContainer(state);
             cx.notify();
-        } else if let Some((app_state, context)) = self
+        } else if let Some((app_state, mut context)) = self
             .workspace
             .read_with(cx, |workspace, cx| {
                 let app_state = workspace.app_state().clone();
@@ -1844,6 +1852,7 @@ impl RemoteServerProjects {
             .ok()
             .flatten()
         {
+            context.rebuild_no_cache = self.dev_container_rebuild_no_cache;
             let config = configs.into_iter().next();
             self.open_dev_container(config, app_state, context, window, cx);
             self.view_in_progress_dev_container(window, cx);

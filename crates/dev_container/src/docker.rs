@@ -284,6 +284,7 @@ impl DockerClient for Docker {
         &self,
         config_files: &Vec<PathBuf>,
         project_name: &str,
+        rebuild_no_cache: bool,
     ) -> Result<(), DevContainerError> {
         let mut command = Command::new(&self.docker_cli);
         if !self.is_podman() {
@@ -294,6 +295,9 @@ impl DockerClient for Docker {
             command.args(&["-f", &docker_compose_file.display().to_string()]);
         }
         command.arg("build");
+        if rebuild_no_cache {
+            command.arg("--no-cache");
+        }
 
         let output = command.output().await.map_err(|e| {
             log::error!("Error running docker compose up: {e}");
@@ -310,6 +314,65 @@ impl DockerClient for Docker {
 
         Ok(())
     }
+    async fn docker_compose_down(
+        &self,
+        config_files: &Vec<PathBuf>,
+        project_name: &str,
+    ) -> Result<(), DevContainerError> {
+        let mut command = Command::new(&self.docker_cli);
+        command.args(&["compose", "--project-name", project_name]);
+        for docker_compose_file in config_files {
+            command.args(&["-f", &docker_compose_file.display().to_string()]);
+        }
+        command.arg("down");
+
+        let output = command.output().await.map_err(|e| {
+            log::error!("Error running docker compose down: {e}");
+            DevContainerError::CommandFailed(command.get_program().display().to_string())
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("no configuration file provided")
+                || stderr.contains("no such file")
+                || stderr.contains("not found")
+            {
+                log::debug!("docker compose down: nothing to remove ({stderr})");
+                return Ok(());
+            }
+            log::error!("Non-success status from docker compose down: {stderr}");
+            return Err(DevContainerError::CommandFailed(
+                command.get_program().display().to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn remove_container(&self, id: &str) -> Result<(), DevContainerError> {
+        let mut command = Command::new(&self.docker_cli);
+        command.args(&["rm", "-f", id]);
+
+        let output = command.output().await.map_err(|e| {
+            log::error!("Error running docker rm: {e}");
+            DevContainerError::CommandFailed(command.get_program().display().to_string())
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("No such container") || stderr.contains("no such container") {
+                log::debug!("Container {id} already gone");
+                return Ok(());
+            }
+            log::error!("Non-success status from docker rm -f {id}: {stderr}");
+            return Err(DevContainerError::CommandFailed(
+                command.get_program().display().to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     async fn run_docker_exec(
         &self,
         container_id: &str,
@@ -450,7 +513,14 @@ pub(crate) trait DockerClient {
         &self,
         config_files: &Vec<PathBuf>,
         project_name: &str,
+        rebuild_no_cache: bool,
     ) -> Result<(), DevContainerError>;
+    async fn docker_compose_down(
+        &self,
+        config_files: &Vec<PathBuf>,
+        project_name: &str,
+    ) -> Result<(), DevContainerError>;
+    async fn remove_container(&self, id: &str) -> Result<(), DevContainerError>;
     async fn run_docker_exec(
         &self,
         container_id: &str,

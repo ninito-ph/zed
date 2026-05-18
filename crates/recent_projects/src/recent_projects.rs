@@ -50,7 +50,9 @@ use workspace::{
     RecentWorkspace, SerializedWorkspaceLocation, Workspace, WorkspaceDb, WorkspaceId,
     notifications::DetachAndPromptErr, with_active_or_new_workspace,
 };
-use zed_actions::{OpenDevContainer, OpenRecent, OpenRemote};
+use zed_actions::{
+    OpenDevContainer, OpenRecent, OpenRemote, RebuildAndOpenDevContainerWithoutCache,
+};
 
 actions!(
     recent_projects,
@@ -274,6 +276,45 @@ fn get_branch_for_worktree(
         })
 }
 
+fn open_dev_container_modal(cx: &mut App, rebuild_no_cache: bool) {
+    with_active_or_new_workspace(cx, move |workspace, window, cx| {
+        if !workspace.project().read(cx).is_local() {
+            cx.spawn_in(window, async move |_, cx| {
+                cx.prompt(
+                    gpui::PromptLevel::Critical,
+                    "Cannot open Dev Container from remote project",
+                    None,
+                    &["Ok"],
+                )
+                .await
+                .ok();
+            })
+            .detach();
+            return;
+        }
+
+        let fs = workspace.project().read(cx).fs().clone();
+        let configs = find_devcontainer_configs(workspace, cx);
+        let app_state = workspace.app_state().clone();
+        let mut dev_container_context = DevContainerContext::from_workspace(workspace, cx);
+        if let Some(context) = dev_container_context.as_mut() {
+            context.rebuild_no_cache = rebuild_no_cache;
+        }
+        let handle = cx.entity().downgrade();
+        workspace.toggle_modal(window, cx, |window, cx| {
+            RemoteServerProjects::new_dev_container(
+                fs,
+                configs,
+                app_state,
+                dev_container_context,
+                window,
+                handle,
+                cx,
+            )
+        });
+    });
+}
+
 pub fn init(cx: &mut App) {
     #[cfg(target_os = "windows")]
     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {
@@ -481,40 +522,9 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new(DisconnectedOverlay::register).detach();
 
-    cx.on_action(|_: &OpenDevContainer, cx| {
-        with_active_or_new_workspace(cx, move |workspace, window, cx| {
-            if !workspace.project().read(cx).is_local() {
-                cx.spawn_in(window, async move |_, cx| {
-                    cx.prompt(
-                        gpui::PromptLevel::Critical,
-                        "Cannot open Dev Container from remote project",
-                        None,
-                        &["Ok"],
-                    )
-                    .await
-                    .ok();
-                })
-                .detach();
-                return;
-            }
-
-            let fs = workspace.project().read(cx).fs().clone();
-            let configs = find_devcontainer_configs(workspace, cx);
-            let app_state = workspace.app_state().clone();
-            let dev_container_context = DevContainerContext::from_workspace(workspace, cx);
-            let handle = cx.entity().downgrade();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RemoteServerProjects::new_dev_container(
-                    fs,
-                    configs,
-                    app_state,
-                    dev_container_context,
-                    window,
-                    handle,
-                    cx,
-                )
-            });
-        });
+    cx.on_action(|_: &OpenDevContainer, cx| open_dev_container_modal(cx, false));
+    cx.on_action(|_: &RebuildAndOpenDevContainerWithoutCache, cx| {
+        open_dev_container_modal(cx, true)
     });
 
     // Subscribe to worktree additions to suggest opening the project in a dev container

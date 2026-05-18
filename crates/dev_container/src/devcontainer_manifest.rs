@@ -56,6 +56,7 @@ struct DevContainerManifest {
     root_image: Option<DockerInspect>,
     features_build_info: Option<FeaturesBuildInfo>,
     features: Vec<FeatureManifest>,
+    rebuild_no_cache: bool,
 }
 const DEFAULT_REMOTE_PROJECT_DIR: &str = "/workspaces";
 impl DevContainerManifest {
@@ -102,6 +103,7 @@ impl DevContainerManifest {
             root_image: None,
             features_build_info: None,
             features: Vec::new(),
+            rebuild_no_cache: context.rebuild_no_cache,
         })
     }
 
@@ -992,7 +994,11 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
 
             let project_name = self.project_name().await?;
             self.docker_client
-                .docker_compose_build(&docker_compose_resources.files, &project_name)
+                .docker_compose_build(
+                    &docker_compose_resources.files,
+                    &project_name,
+                    self.rebuild_no_cache,
+                )
                 .await?;
             (
                 self.docker_client
@@ -1085,7 +1091,11 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
 
                 let project_name = self.project_name().await?;
                 self.docker_client
-                    .docker_compose_build(&docker_compose_resources.files, &project_name)
+                    .docker_compose_build(
+                        &docker_compose_resources.files,
+                        &project_name,
+                        self.rebuild_no_cache,
+                    )
                     .await?;
 
                 (
@@ -1464,6 +1474,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
 
         let mut command = Command::new(self.docker_client.docker_cli());
         command.args(["build"]);
+        if self.rebuild_no_cache {
+            command.arg("--no-cache");
+        }
         command.args(["-f", &dockerfile_path.display().to_string()]);
         command.args(["-t", &updated_image_tag]);
         command.args(["--build-arg", &format!("BASE_IMAGE={}", base_image)]);
@@ -1566,8 +1579,11 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             })?;
 
         let mut command = Command::new(self.docker_client.docker_cli());
+        command.arg("build");
+        if self.rebuild_no_cache {
+            command.arg("--no-cache");
+        }
         command.args([
-            "build",
             "-t",
             "dev_container_feature_content_temp",
             "-f",
@@ -1615,6 +1631,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         let mut command = Command::new(self.docker_client.docker_cli());
 
         command.args(["buildx", "build"]);
+
+        if self.rebuild_no_cache {
+            command.arg("--no-cache");
+        }
 
         // --load is short for --output=docker, loading the built image into the local docker images
         command.arg("--load");
@@ -2331,16 +2351,38 @@ pub(crate) async fn spawn_dev_container(
 
     devcontainer_manifest.parse_nonremote_vars()?;
 
-    log::debug!("Checking for existing container");
-    if let Some(devcontainer) = devcontainer_manifest
-        .check_for_existing_devcontainer()
-        .await?
-    {
-        Ok(devcontainer)
-    } else {
-        log::debug!("Existing container not found. Building");
-
+    if devcontainer_manifest.rebuild_no_cache {
+        log::debug!("Rebuild requested; removing any existing container before building");
+        if matches!(
+            devcontainer_manifest.dev_container().build_type(),
+            DevContainerBuildType::DockerCompose
+        ) {
+            if let Ok(resources) = devcontainer_manifest.docker_compose_manifest().await {
+                let project_name = devcontainer_manifest.project_name().await?;
+                devcontainer_manifest
+                    .docker_client
+                    .docker_compose_down(&resources.files, &project_name)
+                    .await?;
+            }
+        } else if let Some(existing) = devcontainer_manifest.check_for_existing_container().await? {
+            devcontainer_manifest
+                .docker_client
+                .remove_container(&existing.id)
+                .await?;
+        }
         devcontainer_manifest.build_and_run().await
+    } else {
+        log::debug!("Checking for existing container");
+        if let Some(devcontainer) = devcontainer_manifest
+            .check_for_existing_devcontainer()
+            .await?
+        {
+            Ok(devcontainer)
+        } else {
+            log::debug!("Existing container not found. Building");
+
+            devcontainer_manifest.build_and_run().await
+        }
     }
 }
 
@@ -2953,6 +2995,7 @@ mod test {
             fs: fs.clone(),
             http_client: http_client.clone(),
             environment: project_environment.downgrade(),
+            rebuild_no_cache: false,
         };
 
         let test_dependencies = TestDependencies {
@@ -5946,7 +5989,18 @@ FROM docker.io/hexpm/elixir:1.21-erlang-28.4.1-debian-trixie-20260316-slim AS de
             &self,
             _config_files: &Vec<PathBuf>,
             _project_name: &str,
+            _rebuild_no_cache: bool,
         ) -> Result<(), DevContainerError> {
+            Ok(())
+        }
+        async fn docker_compose_down(
+            &self,
+            _config_files: &Vec<PathBuf>,
+            _project_name: &str,
+        ) -> Result<(), DevContainerError> {
+            Ok(())
+        }
+        async fn remove_container(&self, _id: &str) -> Result<(), DevContainerError> {
             Ok(())
         }
         async fn run_docker_exec(
