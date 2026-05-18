@@ -284,7 +284,7 @@ impl DockerClient for Docker {
         &self,
         config_files: &Vec<PathBuf>,
         project_name: &str,
-        rebuild_no_cache: bool,
+        no_cache: bool,
     ) -> Result<(), DevContainerError> {
         let mut command = Command::new(&self.docker_cli);
         if !self.is_podman() {
@@ -295,7 +295,7 @@ impl DockerClient for Docker {
             command.args(&["-f", &docker_compose_file.display().to_string()]);
         }
         command.arg("build");
-        if rebuild_no_cache {
+        if no_cache {
             command.arg("--no-cache");
         }
 
@@ -513,7 +513,7 @@ pub(crate) trait DockerClient {
         &self,
         config_files: &Vec<PathBuf>,
         project_name: &str,
-        rebuild_no_cache: bool,
+        no_cache: bool,
     ) -> Result<(), DevContainerError>;
     async fn docker_compose_down(
         &self,

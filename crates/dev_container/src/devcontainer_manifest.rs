@@ -56,7 +56,8 @@ struct DevContainerManifest {
     root_image: Option<DockerInspect>,
     features_build_info: Option<FeaturesBuildInfo>,
     features: Vec<FeatureManifest>,
-    rebuild_no_cache: bool,
+    force_rebuild: bool,
+    no_cache: bool,
 }
 const DEFAULT_REMOTE_PROJECT_DIR: &str = "/workspaces";
 impl DevContainerManifest {
@@ -103,7 +104,8 @@ impl DevContainerManifest {
             root_image: None,
             features_build_info: None,
             features: Vec::new(),
-            rebuild_no_cache: context.rebuild_no_cache,
+            force_rebuild: context.force_rebuild,
+            no_cache: context.no_cache,
         })
     }
 
@@ -997,7 +999,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 .docker_compose_build(
                     &docker_compose_resources.files,
                     &project_name,
-                    self.rebuild_no_cache,
+                    self.no_cache,
                 )
                 .await?;
             (
@@ -1094,7 +1096,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                     .docker_compose_build(
                         &docker_compose_resources.files,
                         &project_name,
-                        self.rebuild_no_cache,
+                        self.no_cache,
                     )
                     .await?;
 
@@ -1474,7 +1476,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
 
         let mut command = Command::new(self.docker_client.docker_cli());
         command.args(["build"]);
-        if self.rebuild_no_cache {
+        if self.no_cache {
             command.arg("--no-cache");
         }
         command.args(["-f", &dockerfile_path.display().to_string()]);
@@ -1580,7 +1582,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
         let mut command = Command::new(self.docker_client.docker_cli());
         command.arg("build");
-        if self.rebuild_no_cache {
+        if self.no_cache {
             command.arg("--no-cache");
         }
         command.args([
@@ -1632,7 +1634,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
         command.args(["buildx", "build"]);
 
-        if self.rebuild_no_cache {
+        if self.no_cache {
             command.arg("--no-cache");
         }
 
@@ -2351,7 +2353,7 @@ pub(crate) async fn spawn_dev_container(
 
     devcontainer_manifest.parse_nonremote_vars()?;
 
-    if devcontainer_manifest.rebuild_no_cache {
+    if devcontainer_manifest.force_rebuild {
         log::debug!("Rebuild requested; removing any existing container before building");
         if matches!(
             devcontainer_manifest.dev_container().build_type(),
@@ -2995,7 +2997,8 @@ mod test {
             fs: fs.clone(),
             http_client: http_client.clone(),
             environment: project_environment.downgrade(),
-            rebuild_no_cache: false,
+            force_rebuild: false,
+            no_cache: false,
         };
 
         let test_dependencies = TestDependencies {
@@ -4515,7 +4518,7 @@ ENV DOCKER_BUILDKIT=1
 
     #[cfg(not(target_os = "windows"))]
     #[gpui::test]
-    async fn test_rebuild_no_cache_propagates_to_buildx_build(cx: &mut TestAppContext) {
+    async fn test_no_cache_propagates_to_buildx_build(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         env_logger::try_init().ok();
         let given_devcontainer_contents = r#"
@@ -4542,7 +4545,7 @@ ENV DOCKER_BUILDKIT=1
             .unwrap();
 
         devcontainer_manifest.parse_nonremote_vars().unwrap();
-        devcontainer_manifest.rebuild_no_cache = true;
+        devcontainer_manifest.no_cache = true;
         devcontainer_manifest.build_and_run().await.unwrap();
 
         let buildx_cmd = test_dependencies
@@ -4563,7 +4566,56 @@ ENV DOCKER_BUILDKIT=1
 
     #[cfg(not(target_os = "windows"))]
     #[gpui::test]
-    async fn test_rebuild_no_cache_propagates_to_compose_build(cx: &mut TestAppContext) {
+    async fn test_force_rebuild_without_no_cache_omits_no_cache_arg(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        env_logger::try_init().ok();
+        let given_devcontainer_contents = r#"
+            {
+              "name": "cli-${devcontainerId}",
+              "build": { "dockerfile": "Dockerfile" },
+              "updateRemoteUserUID": false,
+              "remoteUser": "node"
+            }
+            "#;
+
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, given_devcontainer_contents)
+                .await
+                .unwrap();
+
+        test_dependencies
+            .fs
+            .atomic_write(
+                PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/Dockerfile"),
+                "FROM mcr.microsoft.com/devcontainers/typescript-node:1-18-bookworm".to_string(),
+            )
+            .await
+            .unwrap();
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.force_rebuild = true;
+        devcontainer_manifest.no_cache = false;
+        devcontainer_manifest.build_and_run().await.unwrap();
+
+        let buildx_cmd = test_dependencies
+            .command_runner
+            .commands_by_program("docker")
+            .into_iter()
+            .find(|c| {
+                c.args.first().map(String::as_str) == Some("buildx")
+                    && c.args.get(1).map(String::as_str) == Some("build")
+            })
+            .expect("expected a `docker buildx build` invocation");
+        assert!(
+            !buildx_cmd.args.iter().any(|a| a == "--no-cache"),
+            "expected --no-cache NOT in docker buildx build args (force_rebuild only), got: {:?}",
+            buildx_cmd.args
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[gpui::test]
+    async fn test_no_cache_propagates_to_compose_build(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         env_logger::try_init().ok();
         let given_devcontainer_contents = r#"
@@ -4610,7 +4662,7 @@ services:
             .unwrap();
 
         devcontainer_manifest.parse_nonremote_vars().unwrap();
-        devcontainer_manifest.rebuild_no_cache = true;
+        devcontainer_manifest.no_cache = true;
         devcontainer_manifest.build_and_run().await.unwrap();
 
         let recorded = test_dependencies.docker.compose_build_no_cache_calls();
@@ -4620,7 +4672,7 @@ services:
         );
         assert!(
             recorded.iter().all(|&v| v),
-            "expected every docker_compose_build call to receive rebuild_no_cache=true, got: {:?}",
+            "expected every docker_compose_build call to receive no_cache=true, got: {:?}",
             recorded
         );
     }
@@ -6111,12 +6163,12 @@ FROM docker.io/hexpm/elixir:1.21-erlang-28.4.1-debian-trixie-20260316-slim AS de
             &self,
             _config_files: &Vec<PathBuf>,
             _project_name: &str,
-            rebuild_no_cache: bool,
+            no_cache: bool,
         ) -> Result<(), DevContainerError> {
             self.compose_build_no_cache_calls
                 .lock()
                 .expect("should be available")
-                .push(rebuild_no_cache);
+                .push(no_cache);
             Ok(())
         }
         async fn docker_compose_down(

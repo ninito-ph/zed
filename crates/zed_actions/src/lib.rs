@@ -621,6 +621,12 @@ pub struct OpenRemote {
 #[serde(deny_unknown_fields)]
 pub struct OpenDevContainer;
 
+/// Rebuilds the dev container and opens the connection modal.
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+#[action(namespace = projects)]
+#[serde(deny_unknown_fields)]
+pub struct RebuildAndOpenDevContainer;
+
 /// Rebuilds the dev container without using Docker's layer cache and opens the connection modal.
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
 #[action(namespace = projects)]

@@ -69,7 +69,8 @@ pub struct RemoteServerProjects {
     dev_container_picker: Option<Entity<Picker<DevContainerPickerDelegate>>>,
     _subscription: Subscription,
     allow_dismissal: bool,
-    dev_container_rebuild_no_cache: bool,
+    dev_container_force_rebuild: bool,
+    dev_container_no_cache: bool,
 }
 
 struct CreateRemoteServer {
@@ -270,7 +271,8 @@ impl PickerDelegate for DevContainerPickerDelegate {
                     .ok()
                     .flatten()
                 {
-                    context.rebuild_no_cache = modal.dev_container_rebuild_no_cache;
+                    context.force_rebuild = modal.dev_container_force_rebuild;
+                    context.no_cache = modal.dev_container_no_cache;
                     modal.open_dev_container(selected_config, app_state, context, window, cx);
                     modal.view_in_progress_dev_container(window, cx);
                 } else {
@@ -850,9 +852,13 @@ impl RemoteServerProjects {
             cx,
         );
 
-        this.dev_container_rebuild_no_cache = dev_container_context
+        this.dev_container_force_rebuild = dev_container_context
             .as_ref()
-            .map(|c| c.rebuild_no_cache)
+            .map(|c| c.force_rebuild)
+            .unwrap_or(false);
+        this.dev_container_no_cache = dev_container_context
+            .as_ref()
+            .map(|c| c.no_cache)
             .unwrap_or(false);
 
         if configs.len() > 1 {
@@ -931,7 +937,8 @@ impl RemoteServerProjects {
             dev_container_picker: None,
             _subscription,
             allow_dismissal: true,
-            dev_container_rebuild_no_cache: false,
+            dev_container_force_rebuild: false,
+            dev_container_no_cache: false,
         }
     }
 
@@ -1852,7 +1859,8 @@ impl RemoteServerProjects {
             .ok()
             .flatten()
         {
-            context.rebuild_no_cache = self.dev_container_rebuild_no_cache;
+            context.force_rebuild = self.dev_container_force_rebuild;
+            context.no_cache = self.dev_container_no_cache;
             let config = configs.into_iter().next();
             self.open_dev_container(config, app_state, context, window, cx);
             self.view_in_progress_dev_container(window, cx);

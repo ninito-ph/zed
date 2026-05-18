@@ -51,7 +51,8 @@ use workspace::{
     notifications::DetachAndPromptErr, with_active_or_new_workspace,
 };
 use zed_actions::{
-    OpenDevContainer, OpenRecent, OpenRemote, RebuildAndOpenDevContainerWithoutCache,
+    OpenDevContainer, OpenRecent, OpenRemote, RebuildAndOpenDevContainer,
+    RebuildAndOpenDevContainerWithoutCache,
 };
 
 actions!(
@@ -276,7 +277,7 @@ fn get_branch_for_worktree(
         })
 }
 
-fn open_dev_container_modal(cx: &mut App, rebuild_no_cache: bool) {
+fn open_dev_container_modal(cx: &mut App, force_rebuild: bool, no_cache: bool) {
     with_active_or_new_workspace(cx, move |workspace, window, cx| {
         if !workspace.project().read(cx).is_local() {
             cx.spawn_in(window, async move |_, cx| {
@@ -298,7 +299,8 @@ fn open_dev_container_modal(cx: &mut App, rebuild_no_cache: bool) {
         let app_state = workspace.app_state().clone();
         let mut dev_container_context = DevContainerContext::from_workspace(workspace, cx);
         if let Some(context) = dev_container_context.as_mut() {
-            context.rebuild_no_cache = rebuild_no_cache;
+            context.force_rebuild = force_rebuild;
+            context.no_cache = no_cache;
         }
         let handle = cx.entity().downgrade();
         workspace.toggle_modal(window, cx, |window, cx| {
@@ -522,9 +524,10 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new(DisconnectedOverlay::register).detach();
 
-    cx.on_action(|_: &OpenDevContainer, cx| open_dev_container_modal(cx, false));
+    cx.on_action(|_: &OpenDevContainer, cx| open_dev_container_modal(cx, false, false));
+    cx.on_action(|_: &RebuildAndOpenDevContainer, cx| open_dev_container_modal(cx, true, false));
     cx.on_action(|_: &RebuildAndOpenDevContainerWithoutCache, cx| {
-        open_dev_container_modal(cx, true)
+        open_dev_container_modal(cx, true, true)
     });
 
     // Subscribe to worktree additions to suggest opening the project in a dev container

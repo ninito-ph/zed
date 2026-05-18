@@ -101,7 +101,8 @@ pub struct DevContainerContext {
     pub fs: Arc<dyn Fs>,
     pub http_client: Arc<dyn HttpClient>,
     pub environment: WeakEntity<ProjectEnvironment>,
-    pub rebuild_no_cache: bool,
+    pub force_rebuild: bool,
+    pub no_cache: bool,
 }
 
 impl DevContainerContext {
@@ -117,7 +118,8 @@ impl DevContainerContext {
             fs,
             http_client,
             environment,
-            rebuild_no_cache: false,
+            force_rebuild: false,
+            no_cache: false,
         })
     }
 
