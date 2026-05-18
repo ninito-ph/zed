@@ -4513,6 +4513,118 @@ ENV DOCKER_BUILDKIT=1
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[gpui::test]
+    async fn test_rebuild_no_cache_propagates_to_buildx_build(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        env_logger::try_init().ok();
+        let given_devcontainer_contents = r#"
+            {
+              "name": "cli-${devcontainerId}",
+              "build": { "dockerfile": "Dockerfile" },
+              "updateRemoteUserUID": false,
+              "remoteUser": "node"
+            }
+            "#;
+
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, given_devcontainer_contents)
+                .await
+                .unwrap();
+
+        test_dependencies
+            .fs
+            .atomic_write(
+                PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/Dockerfile"),
+                "FROM mcr.microsoft.com/devcontainers/typescript-node:1-18-bookworm".to_string(),
+            )
+            .await
+            .unwrap();
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.rebuild_no_cache = true;
+        devcontainer_manifest.build_and_run().await.unwrap();
+
+        let buildx_cmd = test_dependencies
+            .command_runner
+            .commands_by_program("docker")
+            .into_iter()
+            .find(|c| {
+                c.args.first().map(String::as_str) == Some("buildx")
+                    && c.args.get(1).map(String::as_str) == Some("build")
+            })
+            .expect("expected a `docker buildx build` invocation");
+        assert!(
+            buildx_cmd.args.iter().any(|a| a == "--no-cache"),
+            "expected --no-cache in docker buildx build args, got: {:?}",
+            buildx_cmd.args
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[gpui::test]
+    async fn test_rebuild_no_cache_propagates_to_compose_build(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        env_logger::try_init().ok();
+        let given_devcontainer_contents = r#"
+            {
+              "name": "Rust and PostgreSQL",
+              "dockerComposeFile": "docker-compose.yml",
+              "service": "app",
+              "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"
+            }
+            "#;
+
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, given_devcontainer_contents)
+                .await
+                .unwrap();
+
+        test_dependencies
+            .fs
+            .atomic_write(
+                PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/docker-compose.yml"),
+                r#"
+services:
+    app:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        command: sleep infinity
+    db:
+        image: postgres:14.1
+"#
+                .trim()
+                .to_string(),
+            )
+            .await
+            .unwrap();
+
+        test_dependencies
+            .fs
+            .atomic_write(
+                PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/Dockerfile"),
+                "FROM mcr.microsoft.com/devcontainers/rust:2-1-bookworm".to_string(),
+            )
+            .await
+            .unwrap();
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.rebuild_no_cache = true;
+        devcontainer_manifest.build_and_run().await.unwrap();
+
+        let recorded = test_dependencies.docker.compose_build_no_cache_calls();
+        assert!(
+            !recorded.is_empty(),
+            "expected docker_compose_build to be called at least once"
+        );
+        assert!(
+            recorded.iter().all(|&v| v),
+            "expected every docker_compose_build call to receive rebuild_no_cache=true, got: {:?}",
+            recorded
+        );
+    }
+
     #[gpui::test]
     async fn test_spawns_devcontainer_with_docker_compose_and_no_update_uid(
         cx: &mut TestAppContext,
@@ -5706,6 +5818,7 @@ FROM docker.io/hexpm/elixir:1.21-erlang-28.4.1-debian-trixie-20260316-slim AS de
         /// `MultipleMatchingContainers` with these IDs. Used to exercise the
         /// duplicate-container error path.
         duplicate_container_ids: Mutex<Option<Vec<String>>>,
+        compose_build_no_cache_calls: Mutex<Vec<bool>>,
     }
 
     impl FakeDocker {
@@ -5715,7 +5828,16 @@ FROM docker.io/hexpm/elixir:1.21-erlang-28.4.1-debian-trixie-20260316-slim AS de
                 has_buildx: true,
                 exec_commands_recorded: Mutex::new(Vec::new()),
                 duplicate_container_ids: Mutex::new(None),
+                compose_build_no_cache_calls: Mutex::new(Vec::new()),
             }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        fn compose_build_no_cache_calls(&self) -> Vec<bool> {
+            self.compose_build_no_cache_calls
+                .lock()
+                .expect("should be available")
+                .clone()
         }
         #[cfg(not(target_os = "windows"))]
         fn set_podman(&mut self, podman: bool) {
@@ -5989,8 +6111,12 @@ FROM docker.io/hexpm/elixir:1.21-erlang-28.4.1-debian-trixie-20260316-slim AS de
             &self,
             _config_files: &Vec<PathBuf>,
             _project_name: &str,
-            _rebuild_no_cache: bool,
+            rebuild_no_cache: bool,
         ) -> Result<(), DevContainerError> {
+            self.compose_build_no_cache_calls
+                .lock()
+                .expect("should be available")
+                .push(rebuild_no_cache);
             Ok(())
         }
         async fn docker_compose_down(
